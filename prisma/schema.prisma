@@ -1,0 +1,465 @@
+// =====================================================================
+// Mapa Burger — Schema de Banco de Dados
+// Etapa 2: Identidade, Cargos, Setores e Turnos
+// =====================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------
+// Role — Cargo do funcionário (Gerente, Caixa, Cozinheira, Estoquista...)
+// Define hierarquia de permissão via `level`, usada pela camada de auth
+// para decidir o que cada cargo pode ver/fazer na interface.
+// ---------------------------------------------------------------------
+model Role {
+  id    String @id @default(cuid())
+  name  String @unique // Ex: "Gerente"
+  slug  String @unique // Ex: "gerente" — usado em checagens de permissão no código
+  level Int    @default(0) // 0 = operacional, maior = mais acesso (ex: Gerente = 100)
+
+  users User[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("roles")
+}
+
+// ---------------------------------------------------------------------
+// Sector — Setor de trabalho (Cozinha, Caixa, Salão, Estoque)
+// Usado para filtrar checklists, produção e ocorrências relevantes
+// a cada funcionário.
+// ---------------------------------------------------------------------
+model Sector {
+  id   String @id @default(cuid())
+  name String @unique // Ex: "Cozinha"
+  slug String @unique // Ex: "cozinha"
+
+  users User[]
+
+  checklists  Checklist[]
+  occurrences Occurrence[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("sectors")
+}
+
+// ---------------------------------------------------------------------
+// Shift — Turno operacional (Pré-Operação, Almoço, Noite)
+// Relaciona-se a User via tabela de junção UserShift (N:N), pois um
+// funcionário pode estar escalado em mais de um turno.
+// ---------------------------------------------------------------------
+model Shift {
+  id        String @id @default(cuid())
+  name      String @unique // Ex: "Almoço"
+  slug      String @unique // Ex: "almoco"
+  startTime String // Formato "HH:mm", ex: "11:00"
+  endTime   String // Formato "HH:mm", ex: "15:00"
+
+  users UserShift[]
+
+  checklists Checklist[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shifts")
+}
+
+// ---------------------------------------------------------------------
+// User — Funcionário do restaurante
+// ---------------------------------------------------------------------
+model User {
+  id           String  @id @default(cuid())
+  name         String
+  email        String  @unique
+  passwordHash String
+  pin          String? @unique // login rápido via PIN numérico no tablet do setor
+  avatarUrl    String?
+  isActive     Boolean @default(true)
+
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id])
+
+  sectorId String?
+  sector   Sector? @relation(fields: [sectorId], references: [id])
+
+  shifts UserShift[]
+
+  taskExecutions TaskExecution[]
+  productionLogs ProductionLog[]
+  stockMovements StockMovement[]
+  purchaseRequestsMade     PurchaseRequest[] @relation("PurchaseRequestedBy")
+  purchaseRequestsApproved PurchaseRequest[] @relation("PurchaseApprovedBy")
+
+  occurrencesReported Occurrence[] @relation("OccurrenceReportedBy")
+  occurrencesResolved Occurrence[] @relation("OccurrenceResolvedBy")
+  notices             Notice[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([roleId])
+  @@index([sectorId])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------
+// UserShift — Tabela de junção N:N entre User e Shift
+// (um funcionário pode ter mais de um turno na escala)
+// ---------------------------------------------------------------------
+model UserShift {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  shiftId String
+  shift   Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, shiftId])
+  @@map("user_shifts")
+}
+
+// =====================================================================
+// Etapa 4 — Procedimentos Operacionais Padrão (POPs)
+// =====================================================================
+
+// ---------------------------------------------------------------------
+// Checklist — Agrupador de tarefas de um turno/setor.
+// Ex: "Checklist de Abertura — Cozinha", "Checklist de Fechamento — Caixa".
+// ---------------------------------------------------------------------
+model Checklist {
+  id          String  @id @default(cuid())
+  title       String
+  description String?
+
+  shiftId String
+  shift   Shift  @relation(fields: [shiftId], references: [id])
+
+  sectorId String?
+  sector   Sector? @relation(fields: [sectorId], references: [id])
+
+  tasks Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shiftId])
+  @@index([sectorId])
+  @@map("checklists")
+}
+
+// ---------------------------------------------------------------------
+// Task — Item individual de um checklist (ex: "Ligar chapa e conferir gás").
+// Referencia opcionalmente um Pop com o passo a passo detalhado.
+// ---------------------------------------------------------------------
+model Task {
+  id         String  @id @default(cuid())
+  title      String
+  order      Int     @default(0) // posição de exibição dentro do checklist
+  isRequired Boolean @default(true) // tarefa bloqueante ou apenas recomendada
+
+  checklistId String
+  checklist   Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  popId String? @unique
+  pop   Pop?    @relation(fields: [popId], references: [id])
+
+  executions TaskExecution[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([checklistId])
+  @@map("tasks")
+}
+
+// ---------------------------------------------------------------------
+// Pop — Procedimento Operacional Padrão: o passo a passo em Markdown
+// que instrui como executar corretamente uma Task. Versionado, pois
+// procedimentos mudam e é importante saber qual versão foi seguida
+// em cada execução histórica.
+// ---------------------------------------------------------------------
+model Pop {
+  id      String @id @default(cuid())
+  title   String
+  content String @db.Text // conteúdo em Markdown (passo a passo)
+  version Int    @default(1)
+
+  task Task?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("pops")
+}
+
+// ---------------------------------------------------------------------
+// TaskExecution — Registro de auditoria: quem concluiu qual Task e quando.
+// Uma Task pode ter várias execuções ao longo do tempo (ela se repete
+// a cada turno); o histórico completo fica preservado aqui.
+// ---------------------------------------------------------------------
+model TaskExecution {
+  id String @id @default(cuid())
+
+  taskId String
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  completedAt DateTime @default(now())
+  notes       String?
+
+  @@index([taskId])
+  @@index([userId])
+  @@map("task_executions")
+}
+
+// =====================================================================
+// Etapa 5 — Produção da Pré-Operação (molhos, carnes, legumes)
+// =====================================================================
+
+// ---------------------------------------------------------------------
+// Product — Insumo/item produzido internamente (não é item de venda,
+// e sim o que a cozinha PREPARA: ex. "Molho especial", "Blend 120g",
+// "Cebola caramelizada"). `dailyTarget` alimenta a meta exibida na
+// Data Table de produção.
+// ---------------------------------------------------------------------
+model Product {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  category    String // Ex: "Molho", "Carne", "Legume"
+  unit        String // Ex: "kg", "L", "un"
+  dailyTarget Float // Meta de produção diária, na unidade acima
+  isActive    Boolean @default(true)
+
+  productionLogs ProductionLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("products")
+}
+
+// ---------------------------------------------------------------------
+// ProductionLog — Registro de uma produção realizada: quanto foi
+// produzido, quanto se perdeu (quebra/desperdício) e quem foi o
+// responsável. Base para o relatório de perdas e para acompanhar
+// a meta diária por produto.
+// ---------------------------------------------------------------------
+model ProductionLog {
+  id String @id @default(cuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  quantityProduced Float // quantidade efetivamente produzida
+  quantityLost     Float  @default(0) // insumo perdido/desperdiçado no processo
+  lossReason       String? // motivo da perda, quando houver
+  notes            String?
+
+  status ProductionStatus @default(COMPLETED)
+
+  producedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@index([userId])
+  @@map("production_logs")
+}
+
+enum ProductionStatus {
+  COMPLETED // produção concluída normalmente
+  PARTIAL // produzido parcialmente (ex: faltou insumo)
+  CANCELLED // não realizada
+}
+
+// =====================================================================
+// Etapa 6 — Estoque de matérias-primas e embalagens
+// =====================================================================
+
+// ---------------------------------------------------------------------
+// InventoryItem — Item de estoque (matéria-prima, embalagem, limpeza).
+// `minQty`/`maxQty` definem a faixa saudável de nível: abaixo de min
+// é ruptura iminente, acima de max é capital parado/perda por validade.
+// ---------------------------------------------------------------------
+model InventoryItem {
+  id       String @id @default(cuid())
+  name     String @unique
+  category String // Ex: "Matéria-prima", "Embalagem", "Limpeza"
+  unit     String // Ex: "kg", "un", "L"
+
+  currentQty Float @default(0)
+  minQty     Float // nível mínimo antes de virar alerta/crítico
+  maxQty     Float // capacidade máxima de estoque saudável
+
+  movements        StockMovement[]
+  purchaseRequests PurchaseRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@map("inventory_items")
+}
+
+// ---------------------------------------------------------------------
+// StockMovement — Toda entrada ou saída de um item do estoque.
+// A soma dos movimentos é o que sustenta `InventoryItem.currentQty`
+// (aqui mantido como campo desnormalizado por performance de leitura).
+// ---------------------------------------------------------------------
+model StockMovement {
+  id String @id @default(cuid())
+
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  type     StockMovementType
+  quantity Float
+  reason   String? // Ex: "Recebimento de fornecedor", "Consumo na produção"
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([inventoryItemId])
+  @@index([userId])
+  @@map("stock_movements")
+}
+
+enum StockMovementType {
+  IN // entrada (compra, devolução)
+  OUT // saída (consumo, perda, transferência)
+}
+
+// ---------------------------------------------------------------------
+// PurchaseRequest — Solicitação de compra feita por um funcionário
+// quando percebe risco de ruptura, aguardando aprovação do gerente.
+// ---------------------------------------------------------------------
+model PurchaseRequest {
+  id String @id @default(cuid())
+
+  inventoryItemId String
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+
+  requestedById String
+  requestedBy   User   @relation("PurchaseRequestedBy", fields: [requestedById], references: [id])
+
+  quantityRequested Float
+  urgency           PurchaseUrgency @default(NORMAL)
+  notes             String?
+
+  status PurchaseRequestStatus @default(PENDING)
+
+  approvedById String?
+  approvedBy   User?   @relation("PurchaseApprovedBy", fields: [approvedById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([inventoryItemId])
+  @@index([requestedById])
+  @@map("purchase_requests")
+}
+
+enum PurchaseUrgency {
+  LOW
+  NORMAL
+  HIGH
+}
+
+enum PurchaseRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// =====================================================================
+// Etapa 7 — Comunicação entre turnos e ocorrências estruturais
+// =====================================================================
+
+// ---------------------------------------------------------------------
+// Occurrence — Problema relatado por um funcionário (equipamento
+// quebrado, falta de insumo crítico, incidente com cliente, etc).
+// Segue um fluxo simples de status: Aberto → Em Análise → Resolvido.
+// ---------------------------------------------------------------------
+model Occurrence {
+  id          String @id @default(cuid())
+  title       String
+  description String @db.Text
+
+  severity OccurrenceSeverity @default(MEDIUM)
+  status   OccurrenceStatus   @default(OPEN)
+
+  sectorId String?
+  sector   Sector? @relation(fields: [sectorId], references: [id])
+
+  reportedById String
+  reportedBy   User   @relation("OccurrenceReportedBy", fields: [reportedById], references: [id])
+
+  resolvedById String?
+  resolvedBy   User?     @relation("OccurrenceResolvedBy", fields: [resolvedById], references: [id])
+  resolvedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sectorId])
+  @@index([reportedById])
+  @@index([status])
+  @@map("occurrences")
+}
+
+enum OccurrenceSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum OccurrenceStatus {
+  OPEN // aberto, ainda não visto
+  IN_REVIEW // gerente já está avaliando
+  RESOLVED // resolvido
+}
+
+// ---------------------------------------------------------------------
+// Notice — Aviso geral no "Mural de Recados" do dashboard (comunicado
+// da gerência, lembrete de rotina, aviso de manutenção etc).
+// ---------------------------------------------------------------------
+model Notice {
+  id      String @id @default(cuid())
+  title   String
+  content String @db.Text
+
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id])
+
+  pinned    Boolean   @default(false) // fixado no topo do mural
+  expiresAt DateTime? // aviso some do mural automaticamente após essa data
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([authorId])
+  @@map("notices")
+}
