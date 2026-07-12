@@ -19,11 +19,16 @@ import { Button } from "@/components/ui/Button";
 export function Header() {
   const { theme, toggleTheme } = useTheme();
   const { user } = useSession();
-  const [shift, setShift] = React.useState(() => getCurrentShift());
+  // Começa como `null`: calcular o turno já no useState(() => ...) faria
+  // servidor e cliente potencialmente discordarem sobre a hora atual
+  // bem no instante da virada de turno, disparando hydration mismatch.
+  // Calculamos só depois de montado no navegador.
+  const [shift, setShift] = React.useState<ReturnType<typeof getCurrentShift> | null>(null);
 
-  // Reavalia o turno a cada minuto — evita ficar com badge desatualizado
-  // em sessões longas (funcionários passam o dia inteiro logados).
   React.useEffect(() => {
+    setShift(getCurrentShift());
+    // Reavalia o turno a cada minuto — evita ficar com badge desatualizado
+    // em sessões longas (funcionários passam o dia inteiro logados).
     const interval = setInterval(() => setShift(getCurrentShift()), 60_000);
     return () => clearInterval(interval);
   }, []);
@@ -33,7 +38,7 @@ export function Header() {
       <div className="flex items-center gap-2.5">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground">
           <span className="size-1.5 rounded-full bg-success" aria-hidden="true" />
-          Turno: {shift.name}
+          Turno: {shift?.name ?? "—"}
         </span>
       </div>
 

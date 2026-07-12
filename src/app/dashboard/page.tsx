@@ -1,141 +1,171 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import {
-  ClipboardList,
-  ChefHat,
-  Package,
-  AlertTriangle,
-  Users,
-  ArrowUpRight,
-} from "lucide-react";
-import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
-import { NoticeBoard } from "@/components/dashboard/NoticeBoard";
+import { CheckCircle2, Circle, ClipboardList, ListChecks } from "lucide-react";
+import { Card, CardTitle, CardDescription } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
 import { useSession } from "@/components/providers/SessionProvider";
-import type { RoleSlug } from "@/types/auth";
+import { getCurrentShift } from "@/lib/shift";
+import { MOCK_TASKS, type TaskData } from "@/lib/mock-tasks";
 
-interface QuickAccessItem {
-  title: string;
-  description: string;
-  href: string;
-  icon: React.ElementType;
-  roles?: RoleSlug[];
-}
-
-const QUICK_ACCESS: QuickAccessItem[] = [
-  {
-    title: "Checklist do turno",
-    description: "Abertura, fechamento e rotinas do dia.",
-    href: "/dashboard/tasks",
-    icon: ClipboardList,
-  },
-  {
-    title: "Produção",
-    description: "Fila de itens em preparo na cozinha.",
-    href: "/dashboard/production",
-    icon: ChefHat,
-    roles: ["gerente", "cozinheira"],
-  },
-  {
-    title: "Estoque",
-    description: "Nível de insumos e alertas de reposição.",
-    href: "/dashboard/inventory",
-    icon: Package,
-    roles: ["gerente", "estoquista"],
-  },
-  {
-    title: "Ocorrências",
-    description: "Registrar ou consultar problemas do turno.",
-    href: "/dashboard/occurrences",
-    icon: AlertTriangle,
-  },
-  {
-    title: "Equipe",
-    description: "Escala, cargos e setores dos funcionários.",
-    href: "/dashboard/equipe",
-    icon: Users,
-    roles: ["gerente"],
-  },
-];
-
-function getGreeting(hour: number) {
-  if (hour < 12) return "Bom dia";
-  if (hour < 18) return "Boa tarde";
-  return "Boa noite";
-}
-
-export default function DashboardPage() {
+/**
+ * Página de Tarefas — coração do sistema (POPs).
+ *
+ * Formato: lista de cards em duas colunas (Pendentes / Concluídas),
+ * um "Kanban simplificado" — preferido a um Kanban completo com
+ * drag-and-drop porque o fluxo real é binário (fez ou não fez a
+ * tarefa), então arrastar cards adicionaria fricção sem ganho.
+ *
+ * Filtra automaticamente pelas tarefas do turno vigente, já que é
+ * isso que importa pro funcionário agora — não uma lista de tudo
+ * que existe no sistema.
+ */
+export default function TasksPage() {
   const { user } = useSession();
-  const [now, setNow] = React.useState(() => new Date());
+  const shift = React.useMemo(() => getCurrentShift(), []);
 
-  React.useEffect(() => {
-    const interval = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(interval);
-  }, []);
+  const shiftTasks = React.useMemo(
+    () => MOCK_TASKS.filter((t) => t.shiftSlug === shift.slug),
+    [shift.slug]
+  );
 
-  const firstName = user.name.split(" ")[0];
+  const [completedIds, setCompletedIds] = React.useState<Set<string>>(new Set());
+  const [selectedTask, setSelectedTask] = React.useState<TaskData | null>(null);
 
-  const dateLabel = new Intl.DateTimeFormat("pt-BR", {
-    weekday: "long",
-    day: "2-digit",
-    month: "long",
-  }).format(now);
+  const pending = shiftTasks.filter((t) => !completedIds.has(t.id));
+  const completed = shiftTasks.filter((t) => completedIds.has(t.id));
 
-  const timeLabel = new Intl.DateTimeFormat("pt-BR", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(now);
-
-  const items = QUICK_ACCESS.filter((item) => !item.roles || item.roles.includes(user.role.slug));
+  function handleComplete(taskId: string) {
+    setCompletedIds((prev) => new Set(prev).add(taskId));
+    setSelectedTask(null);
+  }
 
   return (
-    <div className="mx-auto max-w-6xl">
-      <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div>
-          <h1 className="text-2xl font-semibold text-foreground">
-            {getGreeting(now.getHours())}, {firstName}
-          </h1>
-          <p className="mt-1 text-sm capitalize text-muted-foreground">{dateLabel}</p>
-        </div>
-
-        <div className="rounded-md border border-border bg-surface px-4 py-2.5 text-right shadow-xs">
-          <p className="font-mono text-xl font-semibold tabular-nums text-foreground">
-            {timeLabel}
-          </p>
-        </div>
+    <div className="mx-auto max-w-5xl">
+      <div className="mb-6">
+        <h1 className="text-xl font-semibold text-foreground">Checklist do turno</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Turno atual: <span className="font-medium text-foreground">{shift.name}</span> ·{" "}
+          {completed.length} de {shiftTasks.length} concluídas
+        </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <h2 className="mb-3 text-sm font-medium text-muted-foreground">Acesso rápido</h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {items.map((item) => {
-              const Icon = item.icon;
-              return (
-                <Link key={item.href} href={item.href} className="block">
-                  <Card variant="interactive" padding="md">
-                    <CardHeader>
-                      <div className="flex size-9 items-center justify-center rounded-md bg-brand-50 text-brand-600 dark:bg-brand-500/15 dark:text-brand-400">
-                        <Icon className="size-4.5" aria-hidden="true" />
-                      </div>
-                      <ArrowUpRight className="size-4 text-muted-foreground" aria-hidden="true" />
-                    </CardHeader>
-                    <CardTitle>{item.title}</CardTitle>
-                    <CardDescription>{item.description}</CardDescription>
-                  </Card>
-                </Link>
-              );
-            })}
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        {/* Coluna: Pendentes */}
+        <div>
+          <div className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <Circle className="size-4" />
+            Pendentes
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-foreground">
+              {pending.length}
+            </span>
+          </div>
+
+          <div className="flex flex-col gap-2.5">
+            {pending.length === 0 && (
+              <Card variant="outline" padding="lg" className="text-center">
+                <ListChecks className="mx-auto mb-2 size-6 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">
+                  Nenhuma tarefa pendente para este turno. Bom trabalho!
+                </p>
+              </Card>
+            )}
+
+            {pending.map((task) => (
+              <Card
+                key={task.id}
+                variant="interactive"
+                padding="sm"
+                onClick={() => setSelectedTask(task)}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-brand-50 text-brand-600 dark:bg-brand-500/15 dark:text-brand-400">
+                    <ClipboardList className="size-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <CardTitle className="truncate">{task.title}</CardTitle>
+                    <CardDescription>{task.checklistTitle}</CardDescription>
+                  </div>
+                  {task.isRequired && (
+                    <span className="mt-0.5 shrink-0 rounded-full bg-warning-subtle px-2 py-0.5 text-[11px] font-medium text-warning">
+                      Obrigatória
+                    </span>
+                  )}
+                </div>
+              </Card>
+            ))}
           </div>
         </div>
 
+        {/* Coluna: Concluídas */}
         <div>
-          <h2 className="mb-3 text-sm font-medium text-muted-foreground">Comunicação</h2>
-          <NoticeBoard />
+          <div className="mb-3 flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <CheckCircle2 className="size-4" />
+            Concluídas
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-foreground">
+              {completed.length}
+            </span>
+          </div>
+
+          <div className="flex flex-col gap-2.5">
+            {completed.length === 0 && (
+              <Card variant="outline" padding="lg" className="text-center">
+                <p className="text-sm text-muted-foreground">
+                  As tarefas concluídas aparecem aqui.
+                </p>
+              </Card>
+            )}
+
+            {completed.map((task) => (
+              <Card key={task.id} variant="default" padding="sm" className="opacity-70">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-success-subtle text-success">
+                    <CheckCircle2 className="size-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <CardTitle className="truncate line-through">{task.title}</CardTitle>
+                    <CardDescription>{task.checklistTitle}</CardDescription>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
         </div>
       </div>
+
+      {/* Modal de detalhe do POP */}
+      <Modal
+        open={selectedTask !== null}
+        onClose={() => setSelectedTask(null)}
+        title={selectedTask?.pop.title ?? ""}
+        description={selectedTask?.checklistTitle}
+        footer={
+          selectedTask && (
+            <>
+              <Button variant="outline" onClick={() => setSelectedTask(null)}>
+                Fechar
+              </Button>
+              <Button variant="primary" onClick={() => handleComplete(selectedTask.id)}>
+                Concluir tarefa
+              </Button>
+            </>
+          )
+        }
+      >
+        {selectedTask && (
+          <ol className="flex flex-col gap-3">
+            {selectedTask.pop.steps.map((step, index) => (
+              <li key={index} className="flex gap-3 text-sm text-foreground">
+                <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+                  {index + 1}
+                </span>
+                <span className="pt-px leading-relaxed">{step}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </Modal>
     </div>
   );
 }
