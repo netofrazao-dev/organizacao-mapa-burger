@@ -41,7 +41,7 @@ export default function LoginPage() {
 
     // Turnos e permissões (Etapa 3+) decidem a rota final por cargo.
     // Por ora, todos caem no dashboard geral.
-    router.push("/");
+    router.push("/dashboard");
   }
 
   return (
